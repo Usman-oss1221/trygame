@@ -1,0 +1,203 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>3D Block Runner</title>
+<style>
+  body { margin:0; overflow:hidden; background:black; }
+  canvas { display:block; }
+</style>
+</head>
+<body>
+<canvas id="glcanvas"></canvas>
+
+<script>
+const canvas = document.getElementById("glcanvas");
+const gl = canvas.getContext("webgl");
+
+if(!gl){
+  alert("WebGL not supported!");
+}
+
+// ================= CANVAS RESIZE =================
+function resizeCanvas(){
+  canvas.width = window.innerWidth;
+  canvas.height = window.innerHeight;
+  gl.viewport(0,0,canvas.width,canvas.height);
+}
+resizeCanvas();
+window.addEventListener("resize", resizeCanvas);
+
+// ================= SHADERS =================
+const vsSource = `
+attribute vec3 position;
+uniform mat4 projection;
+uniform mat4 modelView;
+void main() {
+  gl_Position = projection * modelView * vec4(position,1.0);
+}
+`;
+
+const fsSource = `
+precision mediump float;
+uniform vec4 color;
+void main() {
+  gl_FragColor = color;
+}
+`;
+
+function compileShader(type, source){
+  const shader = gl.createShader(type);
+  gl.shaderSource(shader, source);
+  gl.compileShader(shader);
+  if(!gl.getShaderParameter(shader, gl.COMPILE_STATUS)){
+    console.error(gl.getShaderInfoLog(shader));
+  }
+  return shader;
+}
+
+const vs = compileShader(gl.VERTEX_SHADER, vsSource);
+const fs = compileShader(gl.FRAGMENT_SHADER, fsSource);
+
+const program = gl.createProgram();
+gl.attachShader(program, vs);
+gl.attachShader(program, fs);
+gl.linkProgram(program);
+if(!gl.getProgramParameter(program, gl.LINK_STATUS)){
+  console.error(gl.getProgramInfoLog(program));
+}
+gl.useProgram(program);
+
+// ================= LOCATIONS =================
+const posLoc = gl.getAttribLocation(program,"position");
+const mvLoc = gl.getUniformLocation(program,"modelView");
+const projLoc = gl.getUniformLocation(program,"projection");
+const colorLoc = gl.getUniformLocation(program,"color");
+
+// ================= BUFFERS =================
+const vertices = new Float32Array([
+-1,-1,-1, 1,-1,-1, 1,1,-1, -1,1,-1,
+-1,-1,1, 1,-1,1, 1,1,1, -1,1,1
+]);
+
+const indices = new Uint16Array([
+0,1,2,0,2,3,
+4,5,6,4,6,7,
+0,1,5,0,5,4,
+2,3,7,2,7,6,
+0,3,7,0,7,4,
+1,2,6,1,6,5
+]);
+
+const vbo = gl.createBuffer();
+gl.bindBuffer(gl.ARRAY_BUFFER, vbo);
+gl.bufferData(gl.ARRAY_BUFFER, vertices, gl.STATIC_DRAW);
+
+const ibo = gl.createBuffer();
+gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, ibo);
+gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, indices, gl.STATIC_DRAW);
+
+gl.enableVertexAttribArray(posLoc);
+gl.vertexAttribPointer(posLoc, 3, gl.FLOAT, false, 0, 0);
+
+// ================= MATRICES =================
+function perspective(fov, aspect, near, far){
+  const f = 1/Math.tan(fov/2);
+  return new Float32Array([
+    f/aspect,0,0,0,
+    0,f,0,0,
+    0,0,(far+near)/(near-far),-1,
+    0,0,(2*far*near)/(near-far),0
+  ]);
+}
+
+function translate(x,y,z){
+  return new Float32Array([
+    1,0,0,0,
+    0,1,0,0,
+    0,0,1,0,
+    x,y,z,1
+  ]);
+}
+
+const projection = perspective(Math.PI/3, canvas.width/canvas.height,0.1,100);
+gl.uniformMatrix4fv(projLoc,false,projection);
+
+gl.clearColor(0.05,0.05,0.12,1);
+gl.clearDepth(1.0);
+gl.enable(gl.DEPTH_TEST);
+
+// ================= GAME STATE =================
+let playerLane = 0;
+let obstacles = [];
+let coins = [];
+let speed = 0.35;
+let score = 0;
+let gameOver = false;
+
+document.addEventListener("keydown", e=>{
+  if(gameOver){ location.reload(); return; }
+  if(e.key==="ArrowLeft" && playerLane>-1) playerLane--;
+  if(e.key==="ArrowRight" && playerLane<1) playerLane++;
+});
+
+function spawn(){
+  obstacles.push({lane:Math.floor(Math.random()*3)-1, z:-60});
+  if(Math.random()>0.3) coins.push({lane:Math.floor(Math.random()*3)-1, z:-55});
+}
+setInterval(spawn,900);
+
+// ================= DRAW =================
+function drawCube(x,y,z,color){
+  const mv = translate(x,y,z);
+  gl.uniformMatrix4fv(mvLoc,false,mv);
+  gl.uniform4fv(colorLoc,color);
+  gl.drawElements(gl.TRIANGLES,36,gl.UNSIGNED_SHORT,0);
+}
+
+function checkCollision(aLane,aZ,bLane,bZ){
+  return aLane===bLane && Math.abs(aZ-bZ)<2;
+}
+
+// ================= LOOP =================
+function loop(){
+  gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+
+  if(!gameOver){
+    // Player (body + head)
+    drawCube(playerLane*4,-2,-10,[0,0.8,1,1]);
+    drawCube(playerLane*4,-0.5,-10,[1,0.9,0.6,1]);
+
+    // Obstacles
+    obstacles.forEach((o,i)=>{
+      o.z += speed;
+      drawCube(o.lane*4,-2,o.z,[0.7,0.2,0.1,1]);
+      if(checkCollision(playerLane,-10,o.lane,o.z)){
+        gameOver=true;
+      }
+    });
+    obstacles = obstacles.filter(o=>o.z<5);
+
+    // Coins
+    coins.forEach((c,i)=>{
+      c.z += speed;
+      drawCube(c.lane*4,1,c.z,[1,0.8,0,1]);
+      if(checkCollision(playerLane,-10,c.lane,c.z)){
+        score+=10;
+        coins.splice(i,1);
+      }
+    });
+    coins = coins.filter(c=>c.z<5);
+
+    document.title = "Score: "+score;
+  } else {
+    document.title = "GAME OVER - Score: "+score+" (Press any key to restart)";
+  }
+
+  requestAnimationFrame(loop);
+}
+
+loop();
+</script>
+</body>
+</html>
